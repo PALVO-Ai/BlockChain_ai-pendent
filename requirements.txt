@@ -1,0 +1,23 @@
+# FastAPI
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Pydantic
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# Solana Blockchain
+solana==0.32.0
+base58==2.1.1
+
+# Encryption
+pynacl==1.5.0
+cryptography==42.0.0
+
+# HTTP Clients
+aiohttp==3.9.1
+# DO NOT pin httpx (Solana controls it)
+
+# Utilities
+python-dotenv==1.0.0
