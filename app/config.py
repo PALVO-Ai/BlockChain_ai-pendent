@@ -1,4 +1,5 @@
 from functools import lru_cache
+from typing import Literal
 from pydantic_settings import BaseSettings
 
 
@@ -8,12 +9,12 @@ class Settings(BaseSettings):
     debug: bool = True
     port: int = 8001
 
-    # Your existing backend
+    # Existing backend
     backend_api_url: str = "http://localhost:8000"
     backend_api_version: str = "v1"
 
     # Solana
-    solana_network: str = "devnet"
+    solana_network: Literal["devnet", "testnet", "mainnet-beta"] = "devnet"
     solana_rpc_url: str = "https://api.devnet.solana.com"
 
     # Pinata IPFS
@@ -32,9 +33,10 @@ class Settings(BaseSettings):
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",")]
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
+    model_config = {
+        "env_file": ".env",
+        "case_sensitive": False,
+    }
 
 
 @lru_cache()
