@@ -235,6 +235,97 @@ async def store_from_backend(
 
 
 # -------------------------------------------------
+# ⭐ NEW: Store with transcript
+# -------------------------------------------------
+
+class StoreWithTranscriptRequest(BaseModel):
+    upload_id: str
+    transcript_text: str
+    wallet_address: str
+
+
+@router.post("/store-with-transcript", response_model=StoreAudioResponse)
+async def store_with_transcript(
+    req: StoreWithTranscriptRequest,
+    authorization: str = Header(...),
+):
+    """
+    Store audio + transcript on IPFS + Solana.
+    Transcript is included in the metadata JSON.
+    """
+    token = _require_bearer(authorization)
+
+    backend = BackendClient(token)
+    ipfs = IPFSService()
+    sol = SolanaService()
+
+    try:
+        # 1️⃣ Download audio from backend
+        audio_bytes = await backend.download_audio(req.upload_id)
+
+        # 2️⃣ Generate AES key and encrypt audio
+        aes_key = EncryptionService.generate_aes_key()
+        encrypted_audio, nonce = EncryptionService.encrypt_audio(audio_bytes, aes_key)
+
+        # 3️⃣ Encrypt AES key with wallet public key
+        encrypted_key_b64 = EncryptionService.encrypt_key_for_wallet(
+            aes_key, req.wallet_address
+        )
+
+        # 4️⃣ Upload encrypted audio to IPFS
+        audio_upload = await ipfs.upload_encrypted_audio(
+            encrypted_data=encrypted_audio,
+            filename=f"{req.upload_id}.bin",
+            metadata={"wallet": req.wallet_address, "type": "palvo_audio_with_transcript"},
+        )
+
+        # 5️⃣ Build metadata JSON WITH transcript
+        metadata = {
+            "type": "audio_vault_with_transcript",
+            "version": "1",
+            "wallet": req.wallet_address,
+            "audio_cid": audio_upload["cid"],
+            "encrypted_key_base64": encrypted_key_b64,
+            "nonce_base64": EncryptionService.b64encode(nonce),
+            "audio_hash": EncryptionService.sha256_hex(audio_bytes),
+            "enc_audio_hash": EncryptionService.sha256_hex(encrypted_audio),
+            "upload_id": req.upload_id,
+            "transcript": req.transcript_text,  # ← TRANSCRIPT INCLUDED HERE
+            "size": audio_upload["size"],
+            "ts": int(datetime.now(timezone.utc).timestamp()),
+        }
+
+        # 6️⃣ Upload metadata to IPFS
+        meta_upload = await ipfs.upload_metadata(
+            metadata, name=f"palvo-meta-transcript-{audio_upload['cid']}"
+        )
+
+        # 7️⃣ Prepare Solana memo pointer
+        metadata_bytes = json.dumps(
+            metadata, separators=(",", ":"), sort_keys=True
+        ).encode()
+
+        memo = sol.build_memo_pointer(meta_upload["cid"], metadata_bytes)
+        solana_tx = await sol.prepare_memo_transaction(
+            req.wallet_address, memo
+        )
+
+        return StoreAudioResponse(
+            success=True,
+            audio_cid=audio_upload["cid"],
+            metadata_cid=meta_upload["cid"],
+            audio_gateway_url=audio_upload["gateway_url"],
+            metadata_gateway_url=meta_upload["gateway_url"],
+            solana_tx=solana_tx,
+            message="Audio + transcript stored on blockchain.",
+        )
+    finally:
+        await backend.close()
+        await ipfs.close()
+        await sol.close()
+
+
+# -------------------------------------------------
 # Verify
 # -------------------------------------------------
 
@@ -315,9 +406,16 @@ async def get_wallet_records(wallet_address: str, limit: int = 10):
         )
     finally:
         await sol.close()
+
+
+# -------------------------------------------------
+# Decrypt (DEV ONLY)
+# -------------------------------------------------
+
 class DecryptRequest(BaseModel):
     audio_cid: str
     metadata_cid: str
+
 
 class DecryptResponse(BaseModel):
     success: bool
@@ -325,6 +423,7 @@ class DecryptResponse(BaseModel):
     content_type: str = "audio/mpeg"
     file_size: Optional[int] = None
     error: Optional[str] = None
+
 
 @router.post("/decrypt", response_model=DecryptResponse)
 async def decrypt_audio(request: DecryptRequest):
@@ -359,7 +458,10 @@ async def decrypt_audio(request: DecryptRequest):
         nonce_b64 = metadata.get("nonce_base64")
         
         if not encrypted_key_b64 or not nonce_b64:
-            return DecryptResponse(success=False, error=f"Missing encryption metadata. Keys found: {list(metadata.keys())}")
+            return DecryptResponse(
+                success=False, 
+                error=f"Missing encryption metadata. Keys found: {list(metadata.keys())}"
+            )
         
         nonce = base64.b64decode(nonce_b64)
         
